@@ -4,9 +4,10 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOGS_DIR = path.join(__dirname, '..', 'logs');
+const FILE_LOGGING = process.env.FILE_LOGGING !== '0' && process.env.VERCEL !== '1' && process.env.VERCEL !== 'true';
 
 // Ensure logs directory exists
-if (!fs.existsSync(LOGS_DIR)) {
+if (FILE_LOGGING && !fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
 
@@ -28,14 +29,14 @@ const writeLine = (level, tag, message, extra) => {
   }
   line += '\n';
 
-  // Write to file
-  try {
-    fs.appendFileSync(getLogFile(), line);
-  } catch (err) {
-    console.error('Failed to write log:', err.message);
+  if (FILE_LOGGING) {
+    try {
+      fs.appendFileSync(getLogFile(), line);
+    } catch (err) {
+      console.error('Failed to write log:', err.message);
+    }
   }
 
-  // Also output to console
   if (level === 'ERROR') {
     console.error(line.trimEnd());
   } else {

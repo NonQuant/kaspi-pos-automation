@@ -76,6 +76,28 @@ npm start
 | ------------------ | ---------------------------------------- | ------------ |
 | `TOKEN_SECRET_KEY` | 64-символьная hex-строка для AES-256-GCM | Да           |
 | `PORT`             | Порт сервера (по умолчанию `3000`)       | Нет          |
+| `KASPI_KEYPAIR_JSON` | Содержимое `keypair.json` для serverless-деплоя | Для Vercel |
+| `KASPI_DEVICE_JSON` | Содержимое `device.json` для serverless-деплоя | Для Vercel |
+| `KASPI_KEYPAIR_JSON_BASE64` | Base64-версия `keypair.json`, альтернатива `KASPI_KEYPAIR_JSON` | Нет |
+| `KASPI_DEVICE_JSON_BASE64` | Base64-версия `device.json`, альтернатива `KASPI_DEVICE_JSON` | Нет |
+
+## Деплой на Vercel
+
+Проект содержит `api/index.js` и `vercel.json`, поэтому Express API запускается как Vercel Function, а `public/` обслуживается как статический фронтенд.
+
+Перед деплоем задайте переменные окружения в Vercel:
+
+```bash
+TOKEN_SECRET_KEY=<64-char hex from openssl rand -hex 32>
+KASPI_KEYPAIR_JSON=<contents of local keypair.json>
+KASPI_DEVICE_JSON=<contents of local device.json>
+```
+
+Если удобнее вставлять одну строку без JSON-переносов, используйте `KASPI_KEYPAIR_JSON_BASE64` и `KASPI_DEVICE_JSON_BASE64`.
+
+Если `keypair.json` и `device.json` еще не созданы, запустите локально `npm start` один раз или используйте `npm run regen:keypair` и `npm run regen:device`.
+
+На Vercel файловая система функции доступна только для чтения, поэтому runtime-файлы (`logs/`, `tracked-payments.json`, `webhook-retries.json`) не пишутся. Фоновый polling/webhook loop рассчитан на долгоживущий Node.js сервер; в serverless-окружении используйте клиентский polling API или внешний cron/очередь для надежной отправки вебхуков.
 
 ## Ротация ключей
 

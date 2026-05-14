@@ -11,6 +11,7 @@ import { logger } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRACKED_FILE = path.join(__dirname, '..', 'tracked-payments.json');
+const PERSISTENCE_ENABLED = process.env.VERCEL !== '1' && process.env.VERCEL !== 'true';
 
 // ─── Tracked payments ───
 
@@ -19,6 +20,7 @@ const trackedPayments = new Map();
 // ─── Persistence ───
 
 const saveTracked = () => {
+  if (!PERSISTENCE_ENABLED) return;
   try {
     const data = Object.fromEntries(trackedPayments);
     fs.writeFileSync(TRACKED_FILE, JSON.stringify(data, null, 2));
@@ -28,6 +30,7 @@ const saveTracked = () => {
 };
 
 const loadTracked = () => {
+  if (!PERSISTENCE_ENABLED) return;
   try {
     if (!fs.existsSync(TRACKED_FILE)) return;
     const raw = fs.readFileSync(TRACKED_FILE, 'utf8');
@@ -49,6 +52,7 @@ const RETRY_FILE = path.join(__dirname, '..', 'webhook-retries.json');
 let pendingRetries = [];
 
 const saveRetries = () => {
+  if (!PERSISTENCE_ENABLED) return;
   try {
     fs.writeFileSync(RETRY_FILE, JSON.stringify(pendingRetries, null, 2));
   } catch (err) {
@@ -57,6 +61,7 @@ const saveRetries = () => {
 };
 
 const loadRetries = () => {
+  if (!PERSISTENCE_ENABLED) return;
   try {
     if (!fs.existsSync(RETRY_FILE)) return;
     const raw = fs.readFileSync(RETRY_FILE, 'utf8');

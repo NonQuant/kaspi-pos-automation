@@ -10,6 +10,7 @@ let historyOpId = null;
 let qrPollingTimer = null;
 let qrCountdownTimer = null;
 let qrOperationId = null;
+let authState = null;
 
 // ─── Helpers ───
 
@@ -124,6 +125,8 @@ const showAuthMsg = (msg, type) => {
 };
 
 const resetAuth = () => {
+  authState = null;
+  authProcessId = null;
   setAuthStep(1);
   $('otpInput').value = '';
   showAuthMsg('', '');
@@ -150,8 +153,10 @@ const sendPhone = async () => {
     }
 
     authProcessId = init.processId;
+    authState = init.authState;
 
-    const resp = await apiPost('/api/auth/send-phone', { phoneNumber: phone, processId: authProcessId });
+    const resp = await apiPost('/api/auth/send-phone', { phoneNumber: phone, processId: authProcessId, authState });
+    authState = resp.authState || authState;
     if (resp.success) {
       $('otpDesc').textContent = resp.desc || `SMS отправлен на +7${phone}`;
       setAuthStep(2);
@@ -176,10 +181,12 @@ const verifyOtp = async () => {
   showAuthMsg('', '');
 
   try {
-    const resp = await apiPost('/api/auth/verify-otp', { otp, processId: authProcessId });
+    const resp = await apiPost('/api/auth/verify-otp', { otp, processId: authProcessId, authState });
+    authState = resp.authState || authState;
     if (resp.success && resp.step === 'finished') {
       saveSession(resp);
       authProcessId = null;
+      authState = null;
       showMainScreen(resp);
     } else {
       showAuthMsg(`Неверный код или ошибка: ${resp.body?.data?.desc || JSON.stringify(resp.body)}`, 'err');

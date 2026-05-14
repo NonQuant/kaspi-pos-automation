@@ -10,7 +10,10 @@ import {
   computeXSU,
   computeXSign,
   encryptSecret,
+  encryptJson,
   decryptSecret,
+  decryptJson,
+  exportLastECDH,
 } from '../crypto.js';
 import { loggedFetch, extractUserToken, entranceCookie, generateUUID, nowISO } from '../helpers.js';
 
@@ -18,6 +21,22 @@ const router = Router();
 
 // In-flight auth sessions keyed by processId (temporary, cleared after finish)
 const authSessions = new Map();
+
+const createAuthState = (session) => encryptJson(session);
+
+const getAuthSession = (authState, processId) => {
+  if (authState) {
+    const session = decryptJson(authState);
+    if (processId && session.processId !== processId) {
+      throw new Error('authState does not match processId');
+    }
+    return session;
+  }
+
+  const session = authSessions.get(processId);
+  if (!session) throw new Error('Unknown processId. Call /api/auth/init first');
+  return session;
+};
 
 // ═══════════════════════════════════════════════════
 //  Step 1 — Init entrance (get processId)
@@ -64,7 +83,13 @@ router.post('/init', async (req, res) => {
       authSessions.set(session.processId, session);
     }
 
-    res.json({ success: !!session.processId, processId: session.processId, view: body.view?.code, body });
+    res.json({
+      success: !!session.processId,
+      processId: session.processId,
+      authState: session.processId ? createAuthState(session) : null,
+      view: body.view?.code,
+      body,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -75,12 +100,16 @@ router.post('/init', async (req, res) => {
 // ═══════════════════════════════════════════════════
 
 router.post('/send-phone', async (req, res) => {
-  const { phoneNumber, processId } = req.body;
+  const { phoneNumber, processId, authState } = req.body;
   if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required (e.g. 7XXXXXXXXX)' });
   if (!processId) return res.status(400).json({ error: 'processId required (from /api/auth/init)' });
 
-  const session = authSessions.get(processId);
-  if (!session) return res.status(400).json({ error: 'Unknown processId. Call /api/auth/init first' });
+  let session;
+  try {
+    session = getAuthSession(authState, processId);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   session.phoneNumber = phoneNumber;
 
@@ -105,7 +134,16 @@ router.post('/send-phone', async (req, res) => {
     const body = await resp.json();
     const smsSent = body.view?.code === 'EnterOtp';
 
-    res.json({ success: smsSent, processId: session.processId, desc: body.data?.desc, view: body.view?.code, body });
+    authSessions.set(session.processId, session);
+
+    res.json({
+      success: smsSent,
+      processId: session.processId,
+      authState: createAuthState(session),
+      desc: body.data?.desc,
+      view: body.view?.code,
+      body,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -116,12 +154,16 @@ router.post('/send-phone', async (req, res) => {
 // ═══════════════════════════════════════════════════
 
 router.post('/verify-otp', async (req, res) => {
-  const { otp, processId } = req.body;
+  const { otp, processId, authState } = req.body;
   if (!otp) return res.status(400).json({ error: 'otp required' });
   if (!processId) return res.status(400).json({ error: 'processId required' });
 
-  const session = authSessions.get(processId);
-  if (!session) return res.status(400).json({ error: 'Unknown processId' });
+  let session;
+  try {
+    session = getAuthSession(authState, processId);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   try {
     const resp = await loggedFetch(`${KASPI_ENTRANCE_URL}/api/v1/entrance/step`, {
@@ -156,7 +198,14 @@ router.post('/verify-otp', async (req, res) => {
         ...finishResult,
       });
     } else {
-      res.json({ success: false, processId: session.processId, step: 'otp_response', body });
+      authSessions.set(session.processId, session);
+      res.json({
+        success: false,
+        processId: session.processId,
+        authState: createAuthState(session),
+        step: 'otp_response',
+        body,
+      });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -169,6 +218,7 @@ router.post('/verify-otp', async (req, res) => {
 
 async function doFinish(session) {
   const ecdhX509 = generateECDH();
+  const vtokenEcdhState = exportLastECDH();
   console.log('Generated ECDH public key for guard.x509:', ecdhX509);
 
   const signedDataObj = {
@@ -293,6 +343,7 @@ async function doFinish(session) {
     return {
       tokenSN: session.tokenSN,
       vtokenSecret,
+      vtokenEcdhState,
       profileId: session.profileId,
       organizationId: session.organizationId,
       orgName: session.orgName,
@@ -310,7 +361,7 @@ async function doFinish(session) {
 // ═══════════════════════════════════════════════════
 
 router.post('/refresh', async (req, res) => {
-  const { tokenSN, vtokenSecret, organizationId } = req.body;
+  const { tokenSN, vtokenSecret, vtokenEcdhState, organizationId } = req.body;
   if (!tokenSN) return res.status(400).json({ error: 'tokenSN required' });
   if (!vtokenSecret) return res.status(400).json({ error: 'vtokenSecret required' });
 
@@ -379,7 +430,7 @@ router.post('/refresh', async (req, res) => {
 
       if (serverX509) {
         try {
-          newRawSecret = completeECDHWithSaved(serverX509);
+          newRawSecret = completeECDHWithSaved(serverX509, vtokenEcdhState);
           newVtokenSecret = encryptSecret(newRawSecret);
           console.log('SignInLite: new vtoken activated successfully');
         } catch (e) {
@@ -469,6 +520,7 @@ router.post('/refresh', async (req, res) => {
         success: true,
         tokenSN: newTokenSN,
         vtokenSecret: newVtokenSecret,
+        vtokenEcdhState,
         profileId: session.profileId,
         organizationId: session.organizationId,
         orgName: session.orgName,

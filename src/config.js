@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
+const IS_VERCEL = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 
 export const PORT = process.env.PORT || 3000;
 
@@ -13,23 +14,60 @@ export const PORT = process.env.PORT || 3000;
 
 const KEYPAIR_FILE = path.join(ROOT_DIR, 'keypair.json');
 
-let ecKeyPair;
-if (fs.existsSync(KEYPAIR_FILE)) {
-  const saved = JSON.parse(fs.readFileSync(KEYPAIR_FILE, 'utf8'));
-  ecKeyPair = {
-    privateKey: crypto.createPrivateKey({ key: Buffer.from(saved.privateKey, 'base64'), format: 'der', type: 'pkcs8' }),
-    publicKey: crypto.createPublicKey({ key: Buffer.from(saved.publicKey, 'base64'), format: 'der', type: 'spki' }),
-  };
-  console.log('Loaded ECDSA keypair from keypair.json');
-} else {
-  ecKeyPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-  const saved = {
-    privateKey: ecKeyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
-    publicKey: ecKeyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
-  };
-  fs.writeFileSync(KEYPAIR_FILE, JSON.stringify(saved, null, 2));
-  console.log('Generated new ECDSA keypair → saved to keypair.json');
-}
+const parseJsonEnv = (...names) => {
+  for (const name of names) {
+    const value = process.env[name];
+    if (!value) continue;
+    try {
+      return JSON.parse(value);
+    } catch {
+      try {
+        return JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+      } catch {
+        throw new Error(`${name} must be JSON or base64-encoded JSON`);
+      }
+    }
+  }
+  return null;
+};
+
+const createEcKeyPair = (saved) => ({
+  privateKey: crypto.createPrivateKey({ key: Buffer.from(saved.privateKey, 'base64'), format: 'der', type: 'pkcs8' }),
+  publicKey: crypto.createPublicKey({ key: Buffer.from(saved.publicKey, 'base64'), format: 'der', type: 'spki' }),
+});
+
+const exportEcKeyPair = (keyPair) => ({
+  privateKey: keyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
+  publicKey: keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
+});
+
+const loadEcKeyPair = () => {
+  const fromEnv = parseJsonEnv('KASPI_KEYPAIR_JSON', 'KASPI_KEYPAIR_JSON_BASE64', 'KEYPAIR_JSON', 'KEYPAIR_JSON_BASE64');
+  if (fromEnv) {
+    console.log('Loaded ECDSA keypair from environment');
+    return createEcKeyPair(fromEnv);
+  }
+
+  if (fs.existsSync(KEYPAIR_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(KEYPAIR_FILE, 'utf8'));
+    console.log('Loaded ECDSA keypair from keypair.json');
+    return createEcKeyPair(saved);
+  }
+
+  const generated = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const saved = exportEcKeyPair(generated);
+
+  if (IS_VERCEL) {
+    console.warn('Generated ephemeral ECDSA keypair. Set KASPI_KEYPAIR_JSON in Vercel for stable sessions.');
+  } else {
+    fs.writeFileSync(KEYPAIR_FILE, JSON.stringify(saved, null, 2));
+    console.log('Generated new ECDSA keypair -> saved to keypair.json');
+  }
+
+  return generated;
+};
+
+const ecKeyPair = loadEcKeyPair();
 
 export { ecKeyPair };
 
@@ -44,18 +82,44 @@ const pkTagHash = crypto.createHash('md5').update(pkB64).digest('hex');
 
 const DEVICE_FILE = path.join(ROOT_DIR, 'device.json');
 
-let deviceId, installId, pinHash;
-if (fs.existsSync(DEVICE_FILE)) {
-  const saved = JSON.parse(fs.readFileSync(DEVICE_FILE, 'utf8'));
-  ({ deviceId, installId, pinHash } = saved);
-  console.log('Loaded device identity from device.json');
-} else {
-  deviceId = crypto.randomUUID().toUpperCase();
-  installId = crypto.randomUUID().toUpperCase();
-  pinHash = crypto.createHash('md5').update(crypto.randomBytes(16)).digest('hex');
-  fs.writeFileSync(DEVICE_FILE, JSON.stringify({ deviceId, installId, pinHash }, null, 2));
-  console.log('Generated new device identity → saved to device.json');
-}
+const loadDevice = () => {
+  const fromEnv = parseJsonEnv('KASPI_DEVICE_JSON', 'KASPI_DEVICE_JSON_BASE64', 'DEVICE_JSON', 'DEVICE_JSON_BASE64');
+  if (fromEnv) {
+    console.log('Loaded device identity from environment');
+    return fromEnv;
+  }
+
+  if (process.env.KASPI_DEVICE_ID && process.env.KASPI_INSTALL_ID && process.env.KASPI_PIN_HASH) {
+    console.log('Loaded device identity from split environment variables');
+    return {
+      deviceId: process.env.KASPI_DEVICE_ID,
+      installId: process.env.KASPI_INSTALL_ID,
+      pinHash: process.env.KASPI_PIN_HASH,
+    };
+  }
+
+  if (fs.existsSync(DEVICE_FILE)) {
+    console.log('Loaded device identity from device.json');
+    return JSON.parse(fs.readFileSync(DEVICE_FILE, 'utf8'));
+  }
+
+  const generated = {
+    deviceId: crypto.randomUUID().toUpperCase(),
+    installId: crypto.randomUUID().toUpperCase(),
+    pinHash: crypto.createHash('md5').update(crypto.randomBytes(16)).digest('hex'),
+  };
+
+  if (IS_VERCEL) {
+    console.warn('Generated ephemeral device identity. Set KASPI_DEVICE_JSON in Vercel for stable sessions.');
+  } else {
+    fs.writeFileSync(DEVICE_FILE, JSON.stringify(generated, null, 2));
+    console.log('Generated new device identity -> saved to device.json');
+  }
+
+  return generated;
+};
+
+const { deviceId, installId, pinHash } = loadDevice();
 
 export const DEVICE = {
   deviceId,

@@ -1,11 +1,5 @@
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import {fileURLToPath} from 'url';
 import {ecKeyPair} from './config.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ECDH_FILE = path.join(__dirname, '..', 'ecdh-keypair.json');
 
 // ─── ECDH ───
 
@@ -13,15 +7,17 @@ const vtokenSuite = 'OCRA-1:HOTP-SHA256-6:QH64-T1M';
 
 // ─── AES-256-GCM encryption for vtokenSecret ───
 
-if (!process.env.TOKEN_SECRET_KEY) {
-  console.error('FATAL: TOKEN_SECRET_KEY environment variable is not set.');
-  console.error('Generate one with: echo "TOKEN_SECRET_KEY=$(openssl rand -hex 32)" > .env');
-  process.exit(1);
-}
-const ENCRYPTION_KEY = Buffer.from(process.env.TOKEN_SECRET_KEY, 'hex');
+const getEncryptionKey = () => {
+  const key = process.env.TOKEN_SECRET_KEY || '';
+  if (!/^[0-9a-fA-F]{64}$/.test(key)) {
+    throw new Error('TOKEN_SECRET_KEY must be set to a 64-character hex string');
+  }
+  return Buffer.from(key, 'hex');
+};
 
 export const encryptSecret = (secretBuffer) => {
   const iv = crypto.randomBytes(12);
+  const ENCRYPTION_KEY = getEncryptionKey();
   const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(secretBuffer), cipher.final()]);
   const tag = cipher.getAuthTag();
@@ -33,23 +29,39 @@ export const decryptSecret = (tokenB64) => {
   const iv = buf.subarray(0, 12);
   const tag = buf.subarray(12, 28);
   const encrypted = buf.subarray(28);
+  const ENCRYPTION_KEY = getEncryptionKey();
   const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]);
 };
 
+export const encryptJson = (value) => encryptSecret(Buffer.from(JSON.stringify(value), 'utf8'));
+
+export const decryptJson = (tokenB64) => JSON.parse(decryptSecret(tokenB64).toString('utf8'));
+
 let lastEcdhKeyPair = null;
+
+const serializeEcdhKeyPair = (keyPair) => ({
+  privateKey: keyPair.privateKey.export({type: 'pkcs8', format: 'der'}).toString('base64'),
+  publicKey: keyPair.publicKey.export({type: 'spki', format: 'der'}).toString('base64'),
+});
+
+const deserializeEcdhPrivateKey = (saved) =>
+  crypto.createPrivateKey({
+    key: Buffer.from(saved.privateKey, 'base64'),
+    format: 'der',
+    type: 'pkcs8',
+  });
 
 export const generateECDH = () => {
   lastEcdhKeyPair = crypto.generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
-  // Persist ECDH private key so refresh (SignInLite) can reuse it
-  const saved = {
-    privateKey: lastEcdhKeyPair.privateKey.export({type: 'pkcs8', format: 'der'}).toString('base64'),
-    publicKey: lastEcdhKeyPair.publicKey.export({type: 'spki', format: 'der'}).toString('base64'),
-  };
-  fs.writeFileSync(ECDH_FILE, JSON.stringify(saved, null, 2));
   const spki = lastEcdhKeyPair.publicKey.export({type: 'spki', format: 'der'});
   return spki.toString('base64');
+};
+
+export const exportLastECDH = () => {
+  if (!lastEcdhKeyPair) return null;
+  return encryptJson(serializeEcdhKeyPair(lastEcdhKeyPair));
 };
 
 export const completeECDH = (serverX509B64) => {
@@ -68,14 +80,10 @@ export const completeECDH = (serverX509B64) => {
   return secret;
 };
 
-export const completeECDHWithSaved = (serverX509B64) => {
-  if (!fs.existsSync(ECDH_FILE)) throw new Error('No saved ECDH keypair (ecdh-keypair.json missing)');
-  const saved = JSON.parse(fs.readFileSync(ECDH_FILE, 'utf8'));
-  const privateKey = crypto.createPrivateKey({
-    key: Buffer.from(saved.privateKey, 'base64'),
-    format: 'der',
-    type: 'pkcs8',
-  });
+export const completeECDHWithSaved = (serverX509B64, savedState) => {
+  if (!savedState) throw new Error('No saved ECDH keypair state provided');
+  const saved = decryptJson(savedState);
+  const privateKey = deserializeEcdhPrivateKey(saved);
   const serverPubKey = crypto.createPublicKey({
     key: Buffer.from(serverX509B64, 'base64'),
     format: 'der',
